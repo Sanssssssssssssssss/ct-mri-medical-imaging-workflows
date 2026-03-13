@@ -1,0 +1,45 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE/editor
+.idea/
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/practical_2.ipynb
+notebooks/practical.ipynb
+sample.ipynb
+notebooks/results/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local project artifacts
+models/
+data/
+results/**
+!results/ct/
+!results/ct/figures/
+!results/ct/metrics/
+!results/mri/
+!results/mri/figures/
+!results/mri/metrics/
+!results/**/.gitkeep
