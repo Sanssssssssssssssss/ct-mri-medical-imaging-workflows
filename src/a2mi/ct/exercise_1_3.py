@@ -17,10 +17,12 @@ from .exercise_1_1 import (
     _progress,
     reconstruct_fbp,
     reconstruct_gradient_descent,
+    scale_image_for_practical,
 )
 
 
 def _resolve_out_path(out_path: str | Path) -> Path:
+    """Resolve a project-relative output path to an absolute path."""
     p = Path(out_path)
     if p.is_absolute():
         return p
@@ -29,7 +31,13 @@ def _resolve_out_path(out_path: str | Path) -> Path:
 
 
 def available_fbp_filters() -> list[tuple[str, str]]:
-    """Return standard FBP filters commonly cited in CT literature."""
+    """Return standard FBP filters commonly cited in CT literature.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        Pairs of skimage filter names and display labels.
+    """
     return [
         ("ramp", "Ram-Lak"),
         ("shepp-logan", "Shepp-Logan"),
@@ -41,6 +49,8 @@ def available_fbp_filters() -> list[tuple[str, str]]:
 
 @dataclass
 class FilterReconstruction:
+    """Reconstruction and metrics for one FBP filter choice."""
+
     filter_name: str
     display_name: str
     reconstruction: np.ndarray
@@ -50,6 +60,8 @@ class FilterReconstruction:
 
 @dataclass
 class FilterComparisonResult:
+    """Outputs of the Exercise 1.3(a)/(b) filter comparison workflow."""
+
     n_angles: int
     noise_level: str
     output_dir: Path
@@ -58,6 +70,8 @@ class FilterComparisonResult:
 
 @dataclass
 class IterativeComparisonResult:
+    """Outputs of the Exercise 1.3(c) iterative comparison workflow."""
+
     n_angles: int
     noise_level: str
     n_subsets: int
@@ -69,6 +83,7 @@ class IterativeComparisonResult:
 
 
 def _compute_metrics(reference: np.ndarray, recon: np.ndarray) -> dict[str, float]:
+    """Compute scalar comparison metrics between a reference and reconstruction."""
     ref = np.asarray(reference, dtype=np.float32)
     rec = np.asarray(recon, dtype=np.float32)
     mse = float(np.mean((ref - rec) ** 2))
@@ -86,6 +101,7 @@ def _find_low_dose_case(
     n_angles: int,
     i0_level: float,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Locate the sinogram corresponding to a selected low-dose case."""
     level = float(i0_level)
     for sinogram_set in sinogram_sets:
         if int(sinogram_set.n_angles) != int(n_angles):
@@ -97,7 +113,13 @@ def _find_low_dose_case(
 
 
 def summarize_filter_options() -> list[str]:
-    """Return notebook-friendly descriptions of standard FBP filters."""
+    """Create notebook-friendly labels for the supported FBP filters.
+
+    Returns
+    -------
+    list[str]
+        Human-readable filter descriptions.
+    """
     return [f"{display} (`{name}`)" for name, display in available_fbp_filters()]
 
 
@@ -106,15 +128,42 @@ def run_fbp_filter_comparison(
     sinogram_sets: list[SinogramSet],
     n_angles: int = 360,
     i0_level: float = 1e2,
+    attenuation_scale: float = 1000.0,
     filter_names: Iterable[str] = ("ramp", "shepp-logan", "hann"),
     out_dir: str | Path = "results/ct/figures/exercise_1_3",
     show: bool = False,
 ) -> FilterComparisonResult:
-    """Reconstruct one low-dose case with multiple FBP filters and save each image."""
+    """Run the Exercise 1.3(a)/(b) filter comparison workflow.
+
+    Parameters
+    ----------
+    reference_image:
+        Ground-truth CT image in normalized intensity space. It is converted to
+        practical attenuation units internally before comparison.
+    sinogram_sets:
+        Simulated sinogram groups from Exercise 1.1.
+    n_angles:
+        Selected view count for the comparison.
+    i0_level:
+        Selected low-dose I0 level.
+    attenuation_scale:
+        Scaling factor used to convert the reference image to practical attenuation units.
+    filter_names:
+        Filters to compare against the standard Ram-Lak filter.
+    out_dir:
+        Output directory for saved figures.
+    show:
+        Whether to display the generated figures.
+
+    Returns
+    -------
+    FilterComparisonResult
+        Saved reconstructions, metrics, and output metadata.
+    """
     filter_lookup = dict(available_fbp_filters())
     selected_filters = list(filter_names)
     sinogram, theta = _find_low_dose_case(sinogram_sets=sinogram_sets, n_angles=n_angles, i0_level=i0_level)
-    ref = np.asarray(reference_image, dtype=np.float32)
+    ref = scale_image_for_practical(reference_image, attenuation_scale=attenuation_scale)
 
     output_dir = _resolve_out_path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -174,7 +223,34 @@ def reconstruct_os_sart(
     show_progress: bool = False,
     progress_desc: str | None = None,
 ) -> np.ndarray:
-    """Simple ordered-subsets reconstruction: one update per subset inside each epoch."""
+    """Reconstruct an image with a simple OS-SART style ordered-subsets scheme.
+
+    Parameters
+    ----------
+    sinogram:
+        Input sinogram to reconstruct.
+    theta:
+        Projection angles associated with ``sinogram``.
+    output_size:
+        Optional reconstructed image size.
+    n_iters:
+        Number of outer iterations.
+    n_subsets:
+        Number of ordered subsets used per outer iteration.
+    step_size:
+        Update step size.
+    positivity:
+        Whether to clip negative voxels after each subset update.
+    show_progress:
+        Whether to show a progress bar.
+    progress_desc:
+        Optional label for the progress bar.
+
+    Returns
+    -------
+    np.ndarray
+        Float32 reconstructed image.
+    """
     sino = np.asarray(sinogram, dtype=np.float32)
     if output_size is None:
         output_size = int(sino.shape[0])
@@ -210,6 +286,7 @@ def run_os_sart_comparison(
     sinogram_sets: list[SinogramSet],
     n_angles: int = 360,
     i0_level: float = 1e2,
+    attenuation_scale: float = 1000.0,
     sirt_iters: int = 50,
     sirt_step_size: float = 0.001,
     os_sart_iters: int = 50,
@@ -220,9 +297,47 @@ def run_os_sart_comparison(
     show: bool = False,
     show_progress: bool = False,
 ) -> IterativeComparisonResult:
-    """Compare SIRT-like GD and simple OS-SART on one selected low-dose case."""
+    """Run the Exercise 1.3(c) iterative reconstruction comparison.
+
+    Parameters
+    ----------
+    reference_image:
+        Ground-truth CT image in normalized intensity space. It is converted to
+        practical attenuation units internally before comparison.
+    sinogram_sets:
+        Simulated sinogram groups from Exercise 1.1.
+    n_angles:
+        Selected view count for the comparison.
+    i0_level:
+        Selected low-dose I0 level.
+    attenuation_scale:
+        Scaling factor used to convert the reference image to practical attenuation units.
+    sirt_iters:
+        Iteration count for the SIRT-like baseline.
+    sirt_step_size:
+        Step size for the SIRT-like baseline.
+    os_sart_iters:
+        Iteration count for OS-SART.
+    os_sart_step_size:
+        Step size for OS-SART.
+    n_subsets:
+        Number of subsets used by OS-SART.
+    positivity:
+        Whether to enforce positivity in the iterative methods.
+    out_dir:
+        Output directory for the comparison figure.
+    show:
+        Whether to display the comparison figure.
+    show_progress:
+        Whether to show progress bars.
+
+    Returns
+    -------
+    IterativeComparisonResult
+        Reconstructions, metrics, and saved figure path.
+    """
     sinogram, theta = _find_low_dose_case(sinogram_sets=sinogram_sets, n_angles=n_angles, i0_level=i0_level)
-    ref = np.asarray(reference_image, dtype=np.float32)
+    ref = scale_image_for_practical(reference_image, attenuation_scale=attenuation_scale)
 
     sirt = reconstruct_gradient_descent(
         sinogram=sinogram,
@@ -279,5 +394,47 @@ def run_os_sart_comparison(
         os_sart_metrics=os_sart_metrics,
         figure_path=figure_path,
     )
+
+
+def summarize_filter_comparison(result: FilterComparisonResult) -> list[str]:
+    """Create notebook-friendly summary lines for filter comparisons.
+
+    Parameters
+    ----------
+    result:
+        Filter comparison output to summarize.
+
+    Returns
+    -------
+    list[str]
+        Human-readable lines summarizing saved figures and metrics.
+    """
+    lines: list[str] = []
+    for recon in result.reconstructions:
+        lines.append(
+            f"{recon.display_name}: {recon.out_path} | "
+            f"mse={recon.metrics['mse']:.6f} | psnr={recon.metrics['psnr']:.4f} | ssim={recon.metrics['ssim']:.4f}"
+        )
+    return lines
+
+
+def summarize_iterative_comparison(result: IterativeComparisonResult) -> list[str]:
+    """Create notebook-friendly summary lines for the iterative comparison.
+
+    Parameters
+    ----------
+    result:
+        Iterative comparison output to summarize.
+
+    Returns
+    -------
+    list[str]
+        Human-readable lines describing the saved figure and metrics.
+    """
+    return [
+        f"figure: {result.figure_path}",
+        f"SIRT-like GD metrics: {result.sirt_metrics}",
+        f"OS-SART metrics: {result.os_sart_metrics}",
+    ]
 
 

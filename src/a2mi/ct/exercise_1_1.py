@@ -8,6 +8,7 @@ from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
+from skimage.io import imread
 from skimage.metrics import structural_similarity
 from skimage.transform import iradon, radon
 
@@ -18,6 +19,7 @@ except Exception:
 
 
 def _progress(iterable, enabled: bool = False, desc: str | None = None):
+    """Wrap an iterable with a progress bar when tqdm is available."""
     if enabled and tqdm is not None:
         return tqdm(iterable, desc=desc, leave=False)
     return iterable
@@ -26,6 +28,7 @@ def _progress(iterable, enabled: bool = False, desc: str | None = None):
 # -------- common use --------
 
 def _resolve_out_path(out_path: str | Path) -> Path:
+    """Resolve a project-relative output path to an absolute filesystem path."""
     p = Path(out_path)
     if p.is_absolute():
         return p
@@ -34,33 +37,96 @@ def _resolve_out_path(out_path: str | Path) -> Path:
 
 
 def _format_i0(level: str) -> str:
+    """Normalize an I0 label for figure titles."""
     return level if level.startswith("I0=") else level
 
 
-def prepare_reference_ct_image(raw_image: np.ndarray, attenuation_scale: float = 1000.0) -> np.ndarray:
-    """Convert the input CT image to float attenuation values used in the practical."""
+def prepare_reference_ct_image(raw_image: np.ndarray) -> np.ndarray:
+    """Convert a raw CT image array to a normalized float image.
+
+    Parameters
+    ----------
+    raw_image:
+        Raw 2D or RGB-like CT image array.
+    Returns
+    -------
+    np.ndarray
+        Float32 image clipped to ``[0, 1]``.
+    """
     image = np.asarray(raw_image)
     if image.ndim == 3:
         image = image[..., 0]
     image = image.astype(np.float32)
     if image.max() > 1.0:
         image = image / 255.0
-    image = image / float(attenuation_scale)
-    return np.clip(image, 0.0, 1.0 / float(attenuation_scale))
+    return np.clip(image, 0.0, 1.0)
 
 
 def _image_display_limits(image: np.ndarray) -> tuple[float, float]:
+    """Return a stable grayscale display range for an image."""
     vmax = float(np.max(np.asarray(image, dtype=np.float32)))
     return 0.0, max(vmax, 1e-6)
 
 
+def scale_image_for_practical(image: np.ndarray, attenuation_scale: float = 1000.0) -> np.ndarray:
+    """Convert a normalized CT image to the attenuation scale used in the practical.
+
+    Parameters
+    ----------
+    image:
+        Normalized 2D CT image in ``[0, 1]``.
+    attenuation_scale:
+        Scaling factor used to move the image into attenuation space.
+
+    Returns
+    -------
+    np.ndarray
+        Float32 image scaled to ``image / attenuation_scale``.
+    """
+    return np.asarray(image, dtype=np.float32) / float(attenuation_scale)
+
+
+@dataclass
+class ReferenceImageResult:
+    """Container for a prepared CT reference image and its metadata."""
+
+    image: np.ndarray
+    image_path: Path
+    source_shape: tuple[int, ...]
+    source_dtype: str
+
+
 def make_theta(n_angles: int) -> np.ndarray:
-    """Create projection angles in [0, 360) to match the practical notebook."""
+    """Create evenly spaced projection angles in ``[0, 360)`` degrees.
+
+    Parameters
+    ----------
+    n_angles:
+        Number of projection angles to generate.
+
+    Returns
+    -------
+    np.ndarray
+        Float32 array of projection angles.
+    """
     return np.linspace(0.0, 360.0, int(n_angles), endpoint=False, dtype=np.float32)
 
 
 def forward_project(image: np.ndarray, n_angles: int) -> tuple[np.ndarray, np.ndarray]:
-    """Generate a clean sinogram with Radon transform."""
+    """Compute a clean sinogram for an attenuation-space reference image.
+
+    Parameters
+    ----------
+    image:
+        Input 2D CT image in attenuation space.
+    n_angles:
+        Number of projection views.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Clean sinogram and the associated projection angles.
+    """
     theta = make_theta(n_angles)
     img = np.asarray(image, dtype=np.float32)
     if img.ndim != 2:
@@ -82,7 +148,24 @@ def add_gaussian_noise(
     sigma: float = 0.05,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    """Add additive Gaussian noise in sinogram domain."""
+    """Add zero-mean Gaussian noise directly in sinogram space.
+
+    Parameters
+    ----------
+    sinogram:
+        Clean sinogram array.
+    mu:
+        Mean of the Gaussian noise.
+    sigma:
+        Standard deviation of the Gaussian noise.
+    rng:
+        Optional random number generator.
+
+    Returns
+    -------
+    np.ndarray
+        Noisy sinogram.
+    """
     if rng is None:
         rng = np.random.default_rng()
     noise = rng.normal(loc=mu, scale=sigma, size=sinogram.shape)
@@ -93,9 +176,22 @@ def add_poisson_noise(
     sinogram: np.ndarray,
     i0: float,
     rng: np.random.Generator | None = None,
-    min_counts: float = 1.0,
 ) -> np.ndarray:
-    """Add Poisson counting noise using Beer-Lambert physics."""
+    """Add Poisson counting noise using a Beer-Lambert transmission model.
+
+    Parameters
+    ----------
+    sinogram:
+        Clean line-integral sinogram.
+    i0:
+        Incident photon count.
+    rng:
+        Optional random number generator.
+    Returns
+    -------
+    np.ndarray
+        Noisy sinogram reconstructed from simulated counts.
+    """
     if rng is None:
         rng = np.random.default_rng()
 
@@ -103,12 +199,11 @@ def add_poisson_noise(
     transmission = np.exp(-sino)
     transmission = np.clip(transmission, 0.0, 1.0)
 
-    expected_counts = np.maximum(float(i0) * transmission, min_counts)
+    expected_counts = float(i0) * transmission
     measured_counts = rng.poisson(expected_counts).astype(np.float32)
-    measured_counts = np.maximum(measured_counts, min_counts)
 
     ratio = measured_counts / float(i0)
-    ratio = np.clip(ratio, min_counts / float(i0), 1.0)
+    ratio = np.maximum(ratio, np.finfo(np.float32).eps)
     noisy_sino = -np.log(ratio)
     return noisy_sino.astype(np.float32)
 
@@ -116,34 +211,49 @@ def add_poisson_noise(
 def add_gaussian_poisson_noise_practical(
     sinogram: np.ndarray,
     i0: float,
-    scale: float = 1000.0,
     gaussian_mu: float = 0.0,
-    gaussian_sigma: float = 5.0,
+    gaussian_sigma: float = 0.05,
     rng: np.random.Generator | None = None,
-    min_counts: float = 1.0,
 ) -> np.ndarray:
-    """Practical-2 style noise: scale -> Poisson counts -> Gaussian counts -> log back."""
+    """Apply the practical notebook noise model in the transmission domain.
+
+    Parameters
+    ----------
+    sinogram:
+        Clean line-integral sinogram already expressed in attenuation units.
+    i0:
+        Incident photon count.
+    gaussian_mu:
+        Mean of the additive Gaussian count noise.
+    gaussian_sigma:
+        Standard deviation of the additive Gaussian count noise.
+    rng:
+        Optional random number generator.
+    Returns
+    -------
+    np.ndarray
+        Noisy sinogram in the same attenuation scale as the input sinogram.
+    """
     if rng is None:
         rng = np.random.default_rng()
 
     sino = np.asarray(sinogram, dtype=np.float32)
-    sino_scaled = sino / float(scale)
-
-    transmission = np.exp(-sino_scaled)
-    expected_counts = np.maximum(float(i0) * transmission, min_counts)
+    transmission = np.exp(-sino)
+    expected_counts = float(i0) * transmission
     poisson_counts = rng.poisson(expected_counts).astype(np.float32)
 
     gaussian_counts = rng.normal(loc=gaussian_mu, scale=gaussian_sigma, size=sino.shape).astype(np.float32)
     noisy_counts = poisson_counts + gaussian_counts
-    noisy_counts = np.maximum(noisy_counts, min_counts)
+    noisy_counts = np.maximum(noisy_counts, np.finfo(np.float32).eps)
 
-    noisy_scaled = -np.log(noisy_counts / float(i0))
-    noisy = noisy_scaled * float(scale)
-    return noisy.astype(np.float32)
+    noisy_sino = -np.log(noisy_counts / float(i0))
+    return noisy_sino.astype(np.float32)
 
 
 @dataclass
 class SinogramSet:
+    """Sinograms generated for one projection-view configuration."""
+
     n_angles: int
     theta: np.ndarray
     clean: np.ndarray
@@ -152,6 +262,8 @@ class SinogramSet:
 
 @dataclass
 class ReconstructionCase:
+    """Reconstruction outputs and metrics for one noise/view configuration."""
+
     n_angles: int
     noise_kind: str
     noise_level: str
@@ -163,10 +275,30 @@ class ReconstructionCase:
 
 
 def _pick_case(cases: list[ReconstructionCase], n_angles: int, noise_kind: str, noise_level: str) -> ReconstructionCase:
+    """Select a reconstruction case by its identifying metadata."""
     for c in cases:
         if c.n_angles == n_angles and c.noise_kind == noise_kind and c.noise_level == noise_level:
             return c
     raise KeyError(f"Case not found: angles={n_angles}, kind={noise_kind}, level={noise_level}")
+
+
+@dataclass
+class SinogramSimulationResult:
+    """Outputs of the Exercise 1.1(b) sinogram simulation workflow."""
+
+    sinogram_sets: list[SinogramSet]
+    summary_lines: list[str]
+    panel_path: Path | None
+
+
+@dataclass
+class ReconstructionExperimentResult:
+    """Outputs of the Exercise 1.1(c) reconstruction workflow."""
+
+    cases: list[ReconstructionCase]
+    metric_rows: list[dict[str, float | str | int]]
+    figure_paths: list[Path]
+    metrics_path: Path
 
 
 # -------- exercise 1.1(b): noisy sinogram simulation --------
@@ -175,23 +307,47 @@ def simulate_noisy_sinograms(
     image: np.ndarray,
     angles_list: Iterable[int] = (360, 90, 20),
     gaussian_mu: float = 0.0,
-    gaussian_sigma: float = 5.0,
+    gaussian_sigma: float = 0.05,
     poisson_i0_levels: Iterable[float] = (1e5, 1e3, 1e2),
-    scale: float = 1000.0,
+    attenuation_scale: float = 1000.0,
     seed: int = 42,
 ) -> list[SinogramSet]:
-    """Generate clean and Gaussian+Poisson sinograms for each angle count."""
+    """Generate noisy sinograms for the Exercise 1.1 dose experiment.
+
+    Parameters
+    ----------
+    image:
+        Reference CT image in normalized intensity space.
+    angles_list:
+        Projection counts to simulate.
+    gaussian_mu:
+        Mean of the additive Gaussian count noise.
+    gaussian_sigma:
+        Standard deviation of the additive Gaussian count noise.
+    poisson_i0_levels:
+        Incident photon counts for the Poisson component.
+    attenuation_scale:
+        Scaling factor used to convert the normalized image to the practical
+        attenuation range before projection and noise simulation.
+    seed:
+        Random seed used to keep the experiment reproducible.
+
+    Returns
+    -------
+    list[SinogramSet]
+        Simulated sinograms grouped by view count.
+    """
     rng = np.random.default_rng(seed)
     out: list[SinogramSet] = []
+    attenuation_image = scale_image_for_practical(image, attenuation_scale=attenuation_scale)
 
     for n_angles in angles_list:
-        clean, theta = forward_project(image=image, n_angles=int(n_angles))
+        clean, theta = forward_project(image=attenuation_image, n_angles=int(n_angles))
         gaussian_poisson: dict[float, np.ndarray] = {}
         for i0 in poisson_i0_levels:
             gaussian_poisson[float(i0)] = add_gaussian_poisson_noise_practical(
                 clean,
                 i0=float(i0),
-                scale=float(scale),
                 gaussian_mu=gaussian_mu,
                 gaussian_sigma=gaussian_sigma,
                 rng=rng,
@@ -216,7 +372,30 @@ def save_sinogram_panel(
     dpi: int = 150,
     show: bool = True,
 ) -> Path:
-    """Save sinogram comparison panel for exercise 1.1(b)."""
+    """Save a multi-panel figure for the Exercise 1.1(b) sinogram comparison.
+
+    Parameters
+    ----------
+    sinogram_sets:
+        Simulated sinogram groups to display.
+    gaussian_mu:
+        Mean of the Gaussian noise used in the experiment.
+    gaussian_sigma:
+        Standard deviation of the Gaussian noise used in the experiment.
+    poisson_i0_levels:
+        I0 values shown across the columns.
+    out_path:
+        Output path for the saved figure.
+    dpi:
+        Figure resolution.
+    show:
+        Whether to display the figure interactively.
+
+    Returns
+    -------
+    Path
+        Absolute path of the saved figure.
+    """
     poisson_levels = [float(v) for v in poisson_i0_levels]
     fig, axes = plt.subplots(len(sinogram_sets), 4, figsize=(15, 10), constrained_layout=True)
     if len(sinogram_sets) == 1:
@@ -264,7 +443,24 @@ def reconstruct_fbp(
     filter_name: str = "ramp",
     output_size: int | None = None,
 ) -> np.ndarray:
-    """Reconstruct image by filtered back projection."""
+    """Reconstruct an image with filtered backprojection.
+
+    Parameters
+    ----------
+    sinogram:
+        Input sinogram to reconstruct.
+    theta:
+        Projection angles associated with ``sinogram``.
+    filter_name:
+        Filter passed to ``skimage.transform.iradon``.
+    output_size:
+        Optional output image size.
+
+    Returns
+    -------
+    np.ndarray
+        Float32 reconstructed image.
+    """
     if output_size is None:
         output_size = int(sinogram.shape[0])
     rec = iradon(
@@ -287,7 +483,32 @@ def reconstruct_gradient_descent(
     show_progress: bool = False,
     progress_desc: str | None = None,
 ) -> np.ndarray:
-    """Practical-style least-squares gradient descent using full-batch projections."""
+    """Reconstruct an image with practical-style full-batch gradient descent.
+
+    Parameters
+    ----------
+    sinogram:
+        Input sinogram to reconstruct.
+    theta:
+        Projection angles associated with ``sinogram``.
+    output_size:
+        Optional reconstructed image size.
+    n_iters:
+        Number of gradient-descent iterations.
+    step_size:
+        Gradient-descent step size.
+    positivity:
+        Whether to clip negative voxels after each update.
+    show_progress:
+        Whether to show a tqdm progress bar.
+    progress_desc:
+        Optional label for the progress bar.
+
+    Returns
+    -------
+    np.ndarray
+        Float32 reconstructed image.
+    """
     sino = np.asarray(sinogram, dtype=np.float32)
     if output_size is None:
         output_size = int(sino.shape[0])
@@ -306,6 +527,7 @@ def reconstruct_gradient_descent(
 
 
 def _compute_metrics(reference: np.ndarray, recon: np.ndarray) -> dict[str, float]:
+    """Compute scalar comparison metrics between a reference and reconstruction."""
     ref = np.asarray(reference, dtype=np.float32)
     rec = np.asarray(recon, dtype=np.float32)
     mse = float(np.mean((ref - rec) ** 2))
@@ -328,7 +550,32 @@ def run_reconstruction_comparison(
     gd_positivity: bool = False,
     show_progress: bool = False,
 ) -> list[ReconstructionCase]:
-    """Run FBP and GD reconstruction over Gaussian+Poisson sinograms."""
+    """Run FBP and GD across all simulated Exercise 1.1 sinograms.
+
+    Parameters
+    ----------
+    reference_image:
+        Ground-truth CT image.
+    sinogram_sets:
+        Simulated sinogram groups to reconstruct.
+    poisson_i0_levels:
+        I0 levels to reconstruct for each view count.
+    fbp_filter:
+        Filter passed to the FBP reconstruction.
+    gd_iters:
+        Iteration count for gradient descent.
+    gd_step_size:
+        Step size for gradient descent.
+    gd_positivity:
+        Whether to enforce positivity in gradient descent.
+    show_progress:
+        Whether to show per-case progress bars.
+
+    Returns
+    -------
+    list[ReconstructionCase]
+        Reconstruction outputs and metrics for every case.
+    """
     i0_levels = [float(v) for v in poisson_i0_levels]
     ref = np.asarray(reference_image, dtype=np.float32)
     cases: list[ReconstructionCase] = []
@@ -362,7 +609,18 @@ def run_reconstruction_comparison(
 
 
 def summarize_metrics(cases: list[ReconstructionCase]) -> list[dict[str, float | str | int]]:
-    """Flatten case metrics to report-friendly rows."""
+    """Convert reconstruction cases into flat metric rows.
+
+    Parameters
+    ----------
+    cases:
+        Reconstruction cases to summarize.
+
+    Returns
+    -------
+    list[dict[str, float | str | int]]
+        Flat rows ready for CSV export or notebook display.
+    """
     rows: list[dict[str, float | str | int]] = []
     for c in cases:
         rows.append(
@@ -387,7 +645,20 @@ def summarize_metrics(cases: list[ReconstructionCase]) -> list[dict[str, float |
 
 
 def save_metrics_csv(rows: list[dict[str, float | str | int]], out_path: str | Path) -> Path:
-    """Save summary metrics as CSV."""
+    """Save metric rows to a CSV file.
+
+    Parameters
+    ----------
+    rows:
+        Metric rows to save.
+    out_path:
+        Output CSV path.
+
+    Returns
+    -------
+    Path
+        Absolute path of the saved CSV file.
+    """
     path = _resolve_out_path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     header = ["n_angles", "noise_kind", "noise_level", "algorithm", "mse", "mae", "psnr", "ssim"]
@@ -407,7 +678,30 @@ def save_reconstruction_panels(
     experiment_title: str = "Exercise 1.1(c)",
     file_prefix: str = "exercise_1_1c",
 ) -> list[Path]:
-    """Report-friendly figure set for CT reconstruction comparisons."""
+    """Save reconstruction comparison figures for CT experiments.
+
+    Parameters
+    ----------
+    reference_image:
+        Ground-truth CT image.
+    cases:
+        Reconstruction cases to visualize.
+    out_dir:
+        Output directory for the saved figures.
+    show:
+        Whether to display figures interactively.
+    hardest_case:
+        Optional explicit case for the five-panel hard-case figure.
+    experiment_title:
+        Title prefix used in figure suptitles.
+    file_prefix:
+        Filename prefix used for saved figures.
+
+    Returns
+    -------
+    list[Path]
+        Paths of the saved figures.
+    """
     out_root = _resolve_out_path(out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
     ref = np.asarray(reference_image, dtype=np.float32)
@@ -504,6 +798,197 @@ def save_reconstruction_panels(
     return saved
 
 
+def load_reference_ct_image(
+    image_path: str | Path,
+) -> ReferenceImageResult:
+    """Load and normalize the reference CT image used throughout Exercise 1.
+
+    Parameters
+    ----------
+    image_path:
+        Path to the CT reference image file.
+    Returns
+    -------
+    ReferenceImageResult
+        Prepared image and source metadata.
+    """
+    path = _resolve_out_path(image_path)
+    raw_image = imread(path)
+    image = prepare_reference_ct_image(raw_image)
+    return ReferenceImageResult(
+        image=image,
+        image_path=path,
+        source_shape=tuple(np.asarray(raw_image).shape),
+        source_dtype=str(np.asarray(raw_image).dtype),
+    )
 
 
+def summarize_sinogram_sets(sinogram_sets: list[SinogramSet]) -> list[str]:
+    """Create notebook-friendly one-line summaries for sinogram sets.
 
+    Parameters
+    ----------
+    sinogram_sets:
+        Simulated sinogram groups to summarize.
+
+    Returns
+    -------
+    list[str]
+        Human-readable summary lines.
+    """
+    return [
+        f"angles={s.n_angles:>3} | views={len(s.theta):>3} | clean shape={tuple(s.clean.shape)}"
+        for s in sinogram_sets
+    ]
+
+
+def run_exercise_1_1_sinogram_experiment(
+    image: np.ndarray,
+    angles_list: Iterable[int] = (360, 90, 20),
+    gaussian_mu: float = 0.0,
+    gaussian_sigma: float = 0.05,
+    poisson_i0_levels: Iterable[float] = (1e5, 1e3, 1e2),
+    attenuation_scale: float = 1000.0,
+    seed: int = 42,
+    panel_out_path: str | Path | None = "results/ct/figures/exercise_1_1b_noisy_sinograms.png",
+    panel_dpi: int = 150,
+    show_panel: bool = False,
+) -> SinogramSimulationResult:
+    """Run the full Exercise 1.1(b) sinogram simulation workflow.
+
+    Parameters
+    ----------
+    image:
+        Reference CT image in normalized intensity space.
+    angles_list:
+        Projection counts to simulate.
+    gaussian_mu:
+        Mean of the Gaussian count noise.
+    gaussian_sigma:
+        Standard deviation of the Gaussian count noise.
+    poisson_i0_levels:
+        I0 levels used in the experiment.
+    attenuation_scale:
+        Scaling factor used to convert the image to practical attenuation units.
+    seed:
+        Random seed for reproducibility.
+    panel_out_path:
+        Optional path for the saved sinogram comparison panel.
+    panel_dpi:
+        Figure resolution for the saved panel.
+    show_panel:
+        Whether to display the saved panel interactively.
+
+    Returns
+    -------
+    SinogramSimulationResult
+        Simulated sinograms, summary lines, and optional panel path.
+    """
+    sinogram_sets = simulate_noisy_sinograms(
+        image=image,
+        angles_list=angles_list,
+        gaussian_mu=gaussian_mu,
+        gaussian_sigma=gaussian_sigma,
+        poisson_i0_levels=poisson_i0_levels,
+        attenuation_scale=attenuation_scale,
+        seed=seed,
+    )
+    panel_path = None
+    if panel_out_path is not None:
+        panel_path = save_sinogram_panel(
+            sinogram_sets=sinogram_sets,
+            gaussian_mu=gaussian_mu,
+            gaussian_sigma=gaussian_sigma,
+            poisson_i0_levels=poisson_i0_levels,
+            out_path=panel_out_path,
+            dpi=panel_dpi,
+            show=show_panel,
+        )
+    return SinogramSimulationResult(
+        sinogram_sets=sinogram_sets,
+        summary_lines=summarize_sinogram_sets(sinogram_sets),
+        panel_path=panel_path,
+    )
+
+
+def run_exercise_1_1_reconstruction_experiment(
+    reference_image: np.ndarray,
+    sinogram_sets: list[SinogramSet],
+    poisson_i0_levels: Iterable[float] = (1e5, 1e3, 1e2),
+    attenuation_scale: float = 1000.0,
+    fbp_filter: str = "ramp",
+    gd_iters: int = 50,
+    gd_step_size: float = 0.001,
+    gd_positivity: bool = False,
+    figures_out_dir: str | Path = "results/ct/figures",
+    metrics_out_path: str | Path = "results/ct/metrics/exercise_1_1c_metrics.csv",
+    hardest_case: tuple[int, str, str] | None = None,
+    show_figures: bool = False,
+    show_progress: bool = False,
+) -> ReconstructionExperimentResult:
+    """Run the full Exercise 1.1(c) reconstruction workflow.
+
+    Parameters
+    ----------
+    reference_image:
+        Ground-truth CT image in normalized intensity space. It is converted to
+        practical attenuation units internally before reconstruction metrics are
+        computed.
+    sinogram_sets:
+        Simulated sinograms to reconstruct.
+    poisson_i0_levels:
+        I0 levels included in the experiment.
+    attenuation_scale:
+        Scaling factor used to convert the reference image to practical attenuation units.
+    fbp_filter:
+        FBP filter name.
+    gd_iters:
+        Number of gradient-descent iterations.
+    gd_step_size:
+        Gradient-descent step size.
+    gd_positivity:
+        Whether to enforce positivity in gradient descent.
+    figures_out_dir:
+        Output directory for saved figures.
+    metrics_out_path:
+        Output path for the metrics CSV.
+    hardest_case:
+        Optional explicit hard-case figure selection.
+    show_figures:
+        Whether to display the generated figures.
+    show_progress:
+        Whether to show progress bars for iterative methods.
+
+    Returns
+    -------
+    ReconstructionExperimentResult
+        Cases, metric rows, figure paths, and CSV path.
+    """
+    attenuation_reference = scale_image_for_practical(reference_image, attenuation_scale=attenuation_scale)
+    cases = run_reconstruction_comparison(
+        reference_image=attenuation_reference,
+        sinogram_sets=sinogram_sets,
+        poisson_i0_levels=poisson_i0_levels,
+        fbp_filter=fbp_filter,
+        gd_iters=gd_iters,
+        gd_step_size=gd_step_size,
+        gd_positivity=gd_positivity,
+        show_progress=show_progress,
+    )
+    figure_paths = save_reconstruction_panels(
+        reference_image=attenuation_reference,
+        cases=cases,
+        out_dir=figures_out_dir,
+        show=show_figures,
+        hardest_case=hardest_case,
+        experiment_title="Exercise 1.1(c)",
+        file_prefix="exercise_1_1c",
+    )
+    metric_rows = summarize_metrics(cases)
+    metrics_path = save_metrics_csv(metric_rows, out_path=metrics_out_path)
+    return ReconstructionExperimentResult(
+        cases=cases,
+        metric_rows=metric_rows,
+        figure_paths=figure_paths,
+        metrics_path=metrics_path,
+    )
