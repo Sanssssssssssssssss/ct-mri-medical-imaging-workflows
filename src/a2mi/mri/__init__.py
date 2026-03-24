@@ -1,3 +1,5 @@
+"""Public MRI helpers for the :mod:`a2mi` package."""
+
 from .exercise_2_1 import (
     combine_rsos,
     infer_coil_axis,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -11,6 +12,9 @@ import numpy as np
 from skimage.io import imread
 from skimage.metrics import structural_similarity
 from skimage.transform import iradon, radon
+
+from ..common import resolve_project_path as _resolve_out_path
+from ..common import write_csv_rows
 
 try:
     from tqdm.auto import tqdm
@@ -23,17 +27,6 @@ def _progress(iterable, enabled: bool = False, desc: str | None = None):
     if enabled and tqdm is not None:
         return tqdm(iterable, desc=desc, leave=False)
     return iterable
-
-
-# -------- common use --------
-
-def _resolve_out_path(out_path: str | Path) -> Path:
-    """Resolve a project-relative output path to an absolute filesystem path."""
-    p = Path(out_path)
-    if p.is_absolute():
-        return p
-    project_root = Path(__file__).resolve().parents[3]
-    return project_root / p
 
 
 def _format_i0(level: str) -> str:
@@ -66,6 +59,19 @@ def _image_display_limits(image: np.ndarray) -> tuple[float, float]:
     """Return a stable grayscale display range for an image."""
     vmax = float(np.max(np.asarray(image, dtype=np.float32)))
     return 0.0, max(vmax, 1e-6)
+
+
+def _mask_to_reconstruction_circle(image: np.ndarray) -> np.ndarray:
+    """Set pixels outside the reconstruction circle to zero."""
+    img = np.asarray(image, dtype=np.float32)
+    if img.ndim != 2:
+        raise ValueError(f"Expected 2D image, got shape={img.shape}")
+    h, w = img.shape
+    yy, xx = np.ogrid[:h, :w]
+    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+    radius = min(h, w) / 2.0 - 1.0
+    circle_mask = (yy - cy) ** 2 + (xx - cx) ** 2 <= radius**2
+    return np.where(circle_mask, img, 0.0).astype(np.float32)
 
 
 def scale_image_for_practical(image: np.ndarray, attenuation_scale: float = 1000.0) -> np.ndarray:
@@ -131,13 +137,7 @@ def forward_project(image: np.ndarray, n_angles: int) -> tuple[np.ndarray, np.nd
     img = np.asarray(image, dtype=np.float32)
     if img.ndim != 2:
         raise ValueError(f"Expected 2D image for forward projection, got shape={img.shape}")
-    h, w = img.shape
-    yy, xx = np.ogrid[:h, :w]
-    # Use half-pixel center for even-sized images to avoid geometric bias.
-    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
-    radius = min(h, w) / 2.0 - 1.0
-    circle_mask = (yy - cy) ** 2 + (xx - cx) ** 2 <= radius**2
-    img = np.where(circle_mask, img, 0.0)
+    img = _mask_to_reconstruction_circle(img)
     sinogram = radon(img, theta=theta, circle=True)
     return sinogram.astype(np.float32), theta
 
@@ -477,8 +477,13 @@ def reconstruct_gradient_descent(
     sinogram: np.ndarray,
     theta: np.ndarray,
     output_size: int | None = None,
-    n_iters: int = 80,
-    step_size: float = 0.8,
+    n_iters: int = 60,
+    step_size: float = 0.02,
+    init_mode: str = "fbp",
+    init_image: np.ndarray | None = None,
+    normalize_gradient: bool = True,
+    clip_range: tuple[float, float] | None = None,
+    mask_each_iter: bool = True,
     positivity: bool = False,
     show_progress: bool = False,
     progress_desc: str | None = None,
@@ -497,6 +502,17 @@ def reconstruct_gradient_descent(
         Number of gradient-descent iterations.
     step_size:
         Gradient-descent step size.
+    init_mode:
+        Initialization strategy. Supported values are ``"zeros"`` and ``"fbp"``.
+    init_image:
+        Optional explicit initialization image. When provided, it overrides
+        ``init_mode``.
+    normalize_gradient:
+        Whether to divide the step size by the gradient RMS at each iteration.
+    clip_range:
+        Optional ``(min, max)`` range applied after each update.
+    mask_each_iter:
+        Whether to zero pixels outside the reconstruction circle after each update.
     positivity:
         Whether to clip negative voxels after each update.
     show_progress:
@@ -514,26 +530,84 @@ def reconstruct_gradient_descent(
         output_size = int(sino.shape[0])
     n = int(output_size)
 
-    x = np.zeros((n, n), dtype=np.float32)
+    if init_image is not None:
+        x = np.asarray(init_image, dtype=np.float32).copy()
+    elif init_mode == "zeros":
+        x = np.zeros((n, n), dtype=np.float32)
+    elif init_mode == "fbp":
+        x = reconstruct_fbp(sino, theta, filter_name="ramp", output_size=n)
+    else:
+        raise ValueError(f"Unsupported init_mode='{init_mode}'. Use 'zeros' or 'fbp'.")
+
+    if x.shape != (n, n):
+        raise ValueError(f"Initial image shape {x.shape} does not match output size {(n, n)}")
+    if positivity:
+        x = np.maximum(x, 0.0)
+    if clip_range is not None:
+        lo, hi = clip_range
+        x = np.clip(x, float(lo), float(hi))
+    if mask_each_iter:
+        x = _mask_to_reconstruction_circle(x)
+
     iterator = _progress(range(int(n_iters)), enabled=show_progress, desc=progress_desc or "GD")
     for _ in iterator:
         ax = radon(x, theta=theta, circle=True).astype(np.float32)
         residual = ax - sino
         grad = iradon(residual, theta=theta, circle=True, filter_name=None, output_size=n).astype(np.float32)
-        x = x - step_size * grad
+        alpha = float(step_size)
+        if normalize_gradient:
+            grad_rms = float(np.sqrt(np.mean(grad**2)) + 1e-8)
+            alpha = alpha / grad_rms
+        x = x - alpha * grad
         if positivity:
             x = np.maximum(x, 0.0)
+        if clip_range is not None:
+            lo, hi = clip_range
+            x = np.clip(x, float(lo), float(hi))
+        if mask_each_iter:
+            x = _mask_to_reconstruction_circle(x)
     return x
 
 
-def _compute_metrics(reference: np.ndarray, recon: np.ndarray) -> dict[str, float]:
-    """Compute scalar comparison metrics between a reference and reconstruction."""
+def _compute_metrics(
+    reference: np.ndarray,
+    recon: np.ndarray,
+    metric_mode: str = "practical",
+) -> dict[str, float]:
+    """Compute scalar comparison metrics between a reference and reconstruction.
+
+    Parameters
+    ----------
+    reference:
+        Ground-truth image.
+    recon:
+        Reconstructed image to evaluate.
+    metric_mode:
+        Metric convention. ``"practical"`` compares attenuation-space images
+        directly. ``"reporting"`` matches the reporting style used in the
+        comparison codebase by masking both images to the reconstruction circle,
+        normalizing them to the reference range, clipping the reconstruction to
+        ``[0, 1]``, and using ``data_range=1.0`` for PSNR and SSIM.
+    """
     ref = np.asarray(reference, dtype=np.float32)
     rec = np.asarray(recon, dtype=np.float32)
-    mse = float(np.mean((ref - rec) ** 2))
-    data_range = float(ref.max() - ref.min())
-    if data_range <= 0:
+    if metric_mode == "reporting":
+        ref = _mask_to_reconstruction_circle(ref)
+        rec = _mask_to_reconstruction_circle(rec)
+        ref_min = float(ref.min())
+        ref_max = float(ref.max())
+        denom = max(ref_max - ref_min, 1e-6)
+        ref = np.clip((ref - ref_min) / denom, 0.0, 1.0)
+        rec = np.clip((rec - ref_min) / denom, 0.0, 1.0)
         data_range = 1.0
+    elif metric_mode == "practical":
+        data_range = float(ref.max() - ref.min())
+        if data_range <= 0:
+            data_range = 1.0
+    else:
+        raise ValueError(f"Unsupported metric_mode='{metric_mode}'. Use 'practical' or 'reporting'.")
+
+    mse = float(np.mean((ref - rec) ** 2))
     psnr = float(20.0 * np.log10(data_range) - 10.0 * np.log10(max(mse, 1e-12)))
     ssim = float(structural_similarity(ref, rec, data_range=data_range))
     mae = float(np.mean(np.abs(ref - rec)))
@@ -545,9 +619,14 @@ def run_reconstruction_comparison(
     sinogram_sets: list[SinogramSet],
     poisson_i0_levels: Iterable[float],
     fbp_filter: str = "ramp",
-    gd_iters: int = 80,
-    gd_step_size: float = 0.8,
+    gd_iters: int = 60,
+    gd_step_size: float = 0.02,
+    gd_init_mode: str = "fbp",
+    gd_normalize_gradient: bool = True,
+    gd_clip_to_reference_range: bool = True,
+    gd_mask_each_iter: bool = True,
     gd_positivity: bool = False,
+    metric_mode: str = "reporting",
     show_progress: bool = False,
 ) -> list[ReconstructionCase]:
     """Run FBP and GD across all simulated Exercise 1.1 sinograms.
@@ -566,8 +645,18 @@ def run_reconstruction_comparison(
         Iteration count for gradient descent.
     gd_step_size:
         Step size for gradient descent.
+    gd_init_mode:
+        Initialization strategy for gradient descent.
+    gd_normalize_gradient:
+        Whether to normalize each gradient-descent update by the gradient RMS.
+    gd_clip_to_reference_range:
+        Whether to clip the reconstruction to the reference image range after each update.
+    gd_mask_each_iter:
+        Whether to zero pixels outside the reconstruction circle after each update.
     gd_positivity:
         Whether to enforce positivity in gradient descent.
+    metric_mode:
+        Metric convention used to score reconstructions.
     show_progress:
         Whether to show per-case progress bars.
 
@@ -578,6 +667,9 @@ def run_reconstruction_comparison(
     """
     i0_levels = [float(v) for v in poisson_i0_levels]
     ref = np.asarray(reference_image, dtype=np.float32)
+    clip_range = None
+    if gd_clip_to_reference_range:
+        clip_range = (float(ref.min()), float(ref.max()))
     cases: list[ReconstructionCase] = []
     for s in sinogram_sets:
         for i0 in i0_levels:
@@ -589,6 +681,10 @@ def run_reconstruction_comparison(
                 output_size=ref.shape[0],
                 n_iters=gd_iters,
                 step_size=gd_step_size,
+                init_mode=gd_init_mode,
+                normalize_gradient=gd_normalize_gradient,
+                clip_range=clip_range,
+                mask_each_iter=gd_mask_each_iter,
                 positivity=gd_positivity,
                 show_progress=show_progress,
                 progress_desc=f"GD {s.n_angles} views | I0={i0:.0e}",
@@ -601,8 +697,8 @@ def run_reconstruction_comparison(
                     sinogram=sino,
                     recon_fbp=rec_fbp,
                     recon_gd=rec_gd,
-                    metrics_fbp=_compute_metrics(ref, rec_fbp),
-                    metrics_gd=_compute_metrics(ref, rec_gd),
+                    metrics_fbp=_compute_metrics(ref, rec_fbp, metric_mode=metric_mode),
+                    metrics_gd=_compute_metrics(ref, rec_gd, metric_mode=metric_mode),
                 )
             )
     return cases
@@ -659,14 +755,52 @@ def save_metrics_csv(rows: list[dict[str, float | str | int]], out_path: str | P
     Path
         Absolute path of the saved CSV file.
     """
-    path = _resolve_out_path(out_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    header = ["n_angles", "noise_kind", "noise_level", "algorithm", "mse", "mae", "psnr", "ssim"]
-    lines = [",".join(header)]
-    for r in rows:
-        lines.append(",".join(str(r[k]) for k in header))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+    ordered_rows = [
+        {
+            "n_angles": row["n_angles"],
+            "noise_kind": row["noise_kind"],
+            "noise_level": row["noise_level"],
+            "algorithm": row["algorithm"],
+            "mse": row["mse"],
+            "mae": row["mae"],
+            "psnr": row["psnr"],
+            "ssim": row["ssim"],
+        }
+        for row in rows
+    ]
+    return write_csv_rows(ordered_rows, out_path)
+
+
+def load_metrics_csv(in_path: str | Path) -> list[dict[str, str | float | int]]:
+    """Load previously saved metric rows from a CSV file.
+
+    Parameters
+    ----------
+    in_path:
+        Path to a metrics CSV produced by this module.
+
+    Returns
+    -------
+    list[dict[str, str | float | int]]
+        Parsed metric rows with numeric fields converted when possible.
+    """
+    path = _resolve_out_path(in_path)
+    rows: list[dict[str, str | float | int]] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            parsed: dict[str, str | float | int] = {}
+            for key, value in row.items():
+                if value is None:
+                    parsed[key] = ""
+                elif key == "n_angles":
+                    parsed[key] = int(value)
+                elif key in {"mse", "mae", "psnr", "ssim"}:
+                    parsed[key] = float(value)
+                else:
+                    parsed[key] = value
+            rows.append(parsed)
+    return rows
 
 
 def save_reconstruction_panels(
@@ -714,13 +848,18 @@ def save_reconstruction_panels(
     if poisson_levels:
         for n_angles in angles_list:
             n_cols = len(poisson_levels)
-            fig, axes = plt.subplots(4, n_cols, figsize=(3.6 * n_cols, 10.0), constrained_layout=True)
+            fig_recon, axes_recon = plt.subplots(2, n_cols, figsize=(3.8 * n_cols, 5.6), constrained_layout=True)
+            fig_err, axes_err = plt.subplots(2, n_cols, figsize=(3.8 * n_cols, 5.6), constrained_layout=True)
             if n_cols == 1:
-                axes = axes.reshape(4, 1)
+                axes_recon = axes_recon.reshape(2, 1)
+                axes_err = axes_err.reshape(2, 1)
 
-            fig.suptitle(
-                f"{experiment_title} - Gaussian+Poisson dose sweep | angles={n_angles} | columns=I0 | "
-                f"rows=FBP, GD, |err FBP|, |err GD|",
+            fig_recon.suptitle(
+                f"{experiment_title} - Reconstruction comparison | angles={n_angles} | columns=I0 | rows=FBP, GD",
+                fontsize=12,
+            )
+            fig_err.suptitle(
+                f"{experiment_title} - Error comparison | angles={n_angles} | columns=I0 | rows=|Reference - FBP|, |Reference - GD|",
                 fontsize=12,
             )
 
@@ -731,32 +870,35 @@ def save_reconstruction_panels(
                 col_title = _format_i0(lvl)
                 err_vmax = max(float(err_fbp.max()), float(err_gd.max()), 1e-6)
 
-                ax = axes[0, j]
+                ax = axes_recon[0, j]
                 ax.imshow(c.recon_fbp, cmap="gray", vmin=image_vmin, vmax=image_vmax)
                 ax.set_title(f"{col_title}\nFBP", fontsize=10)
                 ax.axis("off")
 
-                ax = axes[1, j]
+                ax = axes_recon[1, j]
                 ax.imshow(c.recon_gd, cmap="gray", vmin=image_vmin, vmax=image_vmax)
                 ax.set_title(f"{col_title}\nGD (SIRT-like)", fontsize=10)
                 ax.axis("off")
 
-                ax = axes[2, j]
+                ax = axes_err[0, j]
                 ax.imshow(err_fbp, cmap="gray", vmin=0.0, vmax=err_vmax)
                 ax.set_title(f"{col_title}\n|Reference - FBP|", fontsize=10)
                 ax.axis("off")
 
-                ax = axes[3, j]
+                ax = axes_err[1, j]
                 ax.imshow(err_gd, cmap="gray", vmin=0.0, vmax=err_vmax)
                 ax.set_title(f"{col_title}\n|Reference - GD|", fontsize=10)
                 ax.axis("off")
 
-            out = out_root / f"{file_prefix}_poisson_dose_sweep_angles_{n_angles}.png"
-            fig.savefig(out, dpi=150, bbox_inches="tight")
+            out_recon = out_root / f"{file_prefix}_reconstruction_compare_angles_{n_angles}.png"
+            fig_recon.savefig(out_recon, dpi=150, bbox_inches="tight")
+            out_err = out_root / f"{file_prefix}_error_compare_angles_{n_angles}.png"
+            fig_err.savefig(out_err, dpi=150, bbox_inches="tight")
             if show:
                 plt.show()
-            plt.close(fig)
-            saved.append(out)
+            plt.close(fig_recon)
+            plt.close(fig_err)
+            saved.extend([out_recon, out_err])
 
     if hardest_case is None and angles_list and poisson_levels:
         hardest_case = (min(angles_list), "gaussian+poisson", poisson_levels[0])
@@ -850,7 +992,7 @@ def run_exercise_1_1_sinogram_experiment(
     poisson_i0_levels: Iterable[float] = (1e5, 1e3, 1e2),
     attenuation_scale: float = 1000.0,
     seed: int = 42,
-    panel_out_path: str | Path | None = "results/ct/figures/exercise_1_1b_noisy_sinograms.png",
+    panel_out_path: str | Path | None = "results/ct/figures/exercise_1_1/exercise_1_1b_noisy_sinograms.png",
     panel_dpi: int = 150,
     show_panel: bool = False,
 ) -> SinogramSimulationResult:
@@ -917,11 +1059,16 @@ def run_exercise_1_1_reconstruction_experiment(
     poisson_i0_levels: Iterable[float] = (1e5, 1e3, 1e2),
     attenuation_scale: float = 1000.0,
     fbp_filter: str = "ramp",
-    gd_iters: int = 50,
-    gd_step_size: float = 0.001,
+    gd_iters: int = 60,
+    gd_step_size: float = 0.02,
+    gd_init_mode: str = "fbp",
+    gd_normalize_gradient: bool = True,
+    gd_clip_to_reference_range: bool = True,
+    gd_mask_each_iter: bool = True,
     gd_positivity: bool = False,
-    figures_out_dir: str | Path = "results/ct/figures",
-    metrics_out_path: str | Path = "results/ct/metrics/exercise_1_1c_metrics.csv",
+    metric_mode: str = "reporting",
+    figures_out_dir: str | Path = "results/ct/figures/exercise_1_1",
+    metrics_out_path: str | Path = "results/ct/metrics/exercise_1_1/exercise_1_1c_metrics.csv",
     hardest_case: tuple[int, str, str] | None = None,
     show_figures: bool = False,
     show_progress: bool = False,
@@ -946,8 +1093,18 @@ def run_exercise_1_1_reconstruction_experiment(
         Number of gradient-descent iterations.
     gd_step_size:
         Gradient-descent step size.
+    gd_init_mode:
+        Initialization strategy for gradient descent.
+    gd_normalize_gradient:
+        Whether to normalize each gradient-descent update by the gradient RMS.
+    gd_clip_to_reference_range:
+        Whether to clip the reconstruction to the reference image range after each update.
+    gd_mask_each_iter:
+        Whether to zero pixels outside the reconstruction circle after each update.
     gd_positivity:
         Whether to enforce positivity in gradient descent.
+    metric_mode:
+        Metric convention used to score reconstructions.
     figures_out_dir:
         Output directory for saved figures.
     metrics_out_path:
@@ -972,7 +1129,12 @@ def run_exercise_1_1_reconstruction_experiment(
         fbp_filter=fbp_filter,
         gd_iters=gd_iters,
         gd_step_size=gd_step_size,
+        gd_init_mode=gd_init_mode,
+        gd_normalize_gradient=gd_normalize_gradient,
+        gd_clip_to_reference_range=gd_clip_to_reference_range,
+        gd_mask_each_iter=gd_mask_each_iter,
         gd_positivity=gd_positivity,
+        metric_mode=metric_mode,
         show_progress=show_progress,
     )
     figure_paths = save_reconstruction_panels(

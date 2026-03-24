@@ -1,3 +1,5 @@
+"""Public CT helpers for the :mod:`a2mi` package."""
+
 from .exercise_1_1 import (
     ReconstructionExperimentResult,
     ReconstructionCase,
@@ -9,6 +11,7 @@ from .exercise_1_1 import (
     add_poisson_noise,
     forward_project,
     load_reference_ct_image,
+    load_metrics_csv,
     make_theta,
     reconstruct_fbp,
     reconstruct_gradient_descent,
@@ -65,6 +68,7 @@ __all__ = [
     "forward_project",
     "forward_project_limited",
     "load_reference_ct_image",
+    "load_metrics_csv",
     "make_theta",
     "make_theta_limited",
     "reconstruct_fbp",

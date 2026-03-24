@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -11,20 +10,8 @@ from scipy.ndimage import gaussian_filter, median_filter
 from skimage.metrics import mean_squared_error, peak_signal_noise_ratio, structural_similarity
 from skimage.restoration import denoise_bilateral
 
-
-def _savefig(fig: plt.Figure, out_path: str | Path | None) -> None:
-    """Save a Matplotlib figure when an output path is provided.
-
-    Args:
-        fig: Figure to save.
-        out_path: Target path or `None` to skip saving.
-    """
-    if out_path is None:
-        return
-    path = Path(out_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-
+from ..common import save_figure as _savefig
+from ..common import write_csv_rows
 
 def _to_mag(img_coils: np.ndarray) -> np.ndarray:
     """Convert complex coil images to magnitude images.
@@ -48,18 +35,7 @@ def save_metrics_rows(rows: list[dict], out_path: str | Path) -> Path:
     Returns:
         The saved CSV path.
     """
-    path = Path(out_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return path
-    fieldnames = list(rows[0].keys())
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-    return path
+    return write_csv_rows(rows, out_path)
 
 
 def print_metrics_rows(rows: list[dict], title: str = "Metrics") -> None:

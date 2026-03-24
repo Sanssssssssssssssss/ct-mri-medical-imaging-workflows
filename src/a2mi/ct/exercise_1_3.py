@@ -8,26 +8,19 @@ from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
-from skimage.metrics import structural_similarity
 from skimage.transform import iradon, radon
 
+from ..common import resolve_project_path as _resolve_out_path
+from ..common import write_csv_rows
 from .exercise_1_1 import (
     SinogramSet,
+    _compute_metrics,
     _image_display_limits,
     _progress,
     reconstruct_fbp,
     reconstruct_gradient_descent,
     scale_image_for_practical,
 )
-
-
-def _resolve_out_path(out_path: str | Path) -> Path:
-    """Resolve a project-relative output path to an absolute path."""
-    p = Path(out_path)
-    if p.is_absolute():
-        return p
-    project_root = Path(__file__).resolve().parents[3]
-    return project_root / p
 
 
 def available_fbp_filters() -> list[tuple[str, str]]:
@@ -66,6 +59,8 @@ class FilterComparisonResult:
     noise_level: str
     output_dir: Path
     reconstructions: list[FilterReconstruction]
+    metric_rows: list[dict[str, str | float | int]]
+    metrics_path: Path
 
 
 @dataclass
@@ -80,20 +75,8 @@ class IterativeComparisonResult:
     sirt_metrics: dict[str, float]
     os_sart_metrics: dict[str, float]
     figure_path: Path
-
-
-def _compute_metrics(reference: np.ndarray, recon: np.ndarray) -> dict[str, float]:
-    """Compute scalar comparison metrics between a reference and reconstruction."""
-    ref = np.asarray(reference, dtype=np.float32)
-    rec = np.asarray(recon, dtype=np.float32)
-    mse = float(np.mean((ref - rec) ** 2))
-    mae = float(np.mean(np.abs(ref - rec)))
-    data_range = float(ref.max() - ref.min())
-    if data_range <= 0:
-        data_range = 1.0
-    psnr = float(20.0 * np.log10(data_range) - 10.0 * np.log10(max(mse, 1e-12)))
-    ssim = float(structural_similarity(ref, rec, data_range=data_range))
-    return {"mse": mse, "mae": mae, "psnr": psnr, "ssim": ssim}
+    metric_rows: list[dict[str, str | float | int]]
+    metrics_path: Path
 
 
 def _find_low_dose_case(
@@ -130,7 +113,9 @@ def run_fbp_filter_comparison(
     i0_level: float = 1e2,
     attenuation_scale: float = 1000.0,
     filter_names: Iterable[str] = ("ramp", "shepp-logan", "hann"),
-    out_dir: str | Path = "results/ct/figures/exercise_1_3",
+    metric_mode: str = "reporting",
+    out_dir: str | Path = "results/ct/figures/exercise_1_3/filters",
+    metrics_out_path: str | Path = "results/ct/metrics/exercise_1_3/exercise_1_3_filter_metrics.csv",
     show: bool = False,
 ) -> FilterComparisonResult:
     """Run the Exercise 1.3(a)/(b) filter comparison workflow.
@@ -150,8 +135,12 @@ def run_fbp_filter_comparison(
         Scaling factor used to convert the reference image to practical attenuation units.
     filter_names:
         Filters to compare against the standard Ram-Lak filter.
+    metric_mode:
+        Metric convention used to score reconstructions.
     out_dir:
         Output directory for saved figures.
+    metrics_out_path:
+        Output CSV path for the filter comparison metrics.
     show:
         Whether to display the generated figures.
 
@@ -170,6 +159,7 @@ def run_fbp_filter_comparison(
     image_vmin, image_vmax = _image_display_limits(ref)
 
     reconstructions: list[FilterReconstruction] = []
+    metric_rows: list[dict[str, str | float | int]] = []
     for filter_name in selected_filters:
         if filter_name not in filter_lookup:
             raise ValueError(f"Unknown filter '{filter_name}'. Available filters: {sorted(filter_lookup)}")
@@ -179,16 +169,26 @@ def run_fbp_filter_comparison(
             filter_name=filter_name,
             output_size=ref.shape[0],
         )
-        metrics = _compute_metrics(ref, reconstruction)
+        metrics = _compute_metrics(ref, reconstruction, metric_mode=metric_mode)
         out_path = output_dir / f"exercise_1_3_filter_{filter_name}_angles_{int(n_angles)}_I0_{float(i0_level):.0e}.png"
 
-        fig, ax = plt.subplots(1, 1, figsize=(4.6, 4.6), constrained_layout=True)
-        ax.imshow(reconstruction, cmap="gray", vmin=image_vmin, vmax=image_vmax)
-        ax.set_title(
-            f"{filter_lookup[filter_name]} | angles={int(n_angles)} | I0={float(i0_level):.0e}",
-            fontsize=10,
+        fig, axes = plt.subplots(1, 2, figsize=(9.2, 4.6), constrained_layout=True)
+        fig.suptitle(
+            f"Exercise 1.3(b) | {filter_lookup[filter_name]} filter | angles={int(n_angles)} | I0={float(i0_level):.0e}",
+            fontsize=11,
         )
-        ax.axis("off")
+
+        axes[0].imshow(reconstruction, cmap="gray", vmin=image_vmin, vmax=image_vmax)
+        axes[0].set_title(
+            f"Filtered Reconstruction\nmse={metrics['mse']:.6f} | psnr={metrics['psnr']:.3f} | ssim={metrics['ssim']:.3f}",
+            fontsize=9,
+        )
+        axes[0].axis("off")
+
+        axes[1].imshow(ref, cmap="gray", vmin=image_vmin, vmax=image_vmax)
+        axes[1].set_title("Clean Reference", fontsize=9)
+        axes[1].axis("off")
+
         fig.savefig(out_path, dpi=150, bbox_inches="tight")
         if show:
             plt.show()
@@ -203,12 +203,28 @@ def run_fbp_filter_comparison(
                 out_path=out_path,
             )
         )
+        metric_rows.append(
+            {
+                "n_angles": int(n_angles),
+                "noise_level": f"I0={float(i0_level):.0e}",
+                "filter_name": filter_name,
+                "filter_display": filter_lookup[filter_name],
+                "mse": metrics["mse"],
+                "mae": metrics["mae"],
+                "psnr": metrics["psnr"],
+                "ssim": metrics["ssim"],
+            }
+        )
+
+    metrics_path = write_csv_rows(metric_rows, metrics_out_path)
 
     return FilterComparisonResult(
         n_angles=int(n_angles),
         noise_level=f"I0={float(i0_level):.0e}",
         output_dir=output_dir,
         reconstructions=reconstructions,
+        metric_rows=metric_rows,
+        metrics_path=metrics_path,
     )
 
 
@@ -287,13 +303,19 @@ def run_os_sart_comparison(
     n_angles: int = 360,
     i0_level: float = 1e2,
     attenuation_scale: float = 1000.0,
-    sirt_iters: int = 50,
-    sirt_step_size: float = 0.001,
+    sirt_iters: int = 60,
+    sirt_step_size: float = 0.02,
+    sirt_init_mode: str = "fbp",
+    sirt_normalize_gradient: bool = True,
+    sirt_clip_to_reference_range: bool = True,
+    sirt_mask_each_iter: bool = True,
     os_sart_iters: int = 50,
     os_sart_step_size: float = 0.001,
     n_subsets: int = 6,
+    metric_mode: str = "reporting",
     positivity: bool = False,
-    out_dir: str | Path = "results/ct/figures/exercise_1_3",
+    out_dir: str | Path = "results/ct/figures/exercise_1_3/iterative",
+    metrics_out_path: str | Path = "results/ct/metrics/exercise_1_3/exercise_1_3_iterative_metrics.csv",
     show: bool = False,
     show_progress: bool = False,
 ) -> IterativeComparisonResult:
@@ -316,16 +338,28 @@ def run_os_sart_comparison(
         Iteration count for the SIRT-like baseline.
     sirt_step_size:
         Step size for the SIRT-like baseline.
+    sirt_init_mode:
+        Initialization strategy for the SIRT-like baseline.
+    sirt_normalize_gradient:
+        Whether to normalize each SIRT-like update by the gradient RMS.
+    sirt_clip_to_reference_range:
+        Whether to clip the SIRT-like reconstruction to the reference image range after each update.
+    sirt_mask_each_iter:
+        Whether to zero pixels outside the reconstruction circle after each SIRT-like update.
     os_sart_iters:
         Iteration count for OS-SART.
     os_sart_step_size:
         Step size for OS-SART.
     n_subsets:
         Number of subsets used by OS-SART.
+    metric_mode:
+        Metric convention used to score reconstructions.
     positivity:
         Whether to enforce positivity in the iterative methods.
     out_dir:
         Output directory for the comparison figure.
+    metrics_out_path:
+        Output CSV path for the iterative comparison metrics.
     show:
         Whether to display the comparison figure.
     show_progress:
@@ -345,6 +379,10 @@ def run_os_sart_comparison(
         output_size=ref.shape[0],
         n_iters=sirt_iters,
         step_size=sirt_step_size,
+        init_mode=sirt_init_mode,
+        normalize_gradient=sirt_normalize_gradient,
+        clip_range=(float(ref.min()), float(ref.max())) if sirt_clip_to_reference_range else None,
+        mask_each_iter=sirt_mask_each_iter,
         positivity=positivity,
         show_progress=show_progress,
         progress_desc=f"SIRT {int(n_angles)} views | I0={float(i0_level):.0e}",
@@ -361,8 +399,8 @@ def run_os_sart_comparison(
         progress_desc=f"OS-SART {int(n_angles)} views | I0={float(i0_level):.0e}",
     )
 
-    sirt_metrics = _compute_metrics(ref, sirt)
-    os_sart_metrics = _compute_metrics(ref, os_sart)
+    sirt_metrics = _compute_metrics(ref, sirt, metric_mode=metric_mode)
+    os_sart_metrics = _compute_metrics(ref, os_sart, metric_mode=metric_mode)
 
     output_dir = _resolve_out_path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -384,6 +422,28 @@ def run_os_sart_comparison(
         plt.show()
     plt.close(fig)
 
+    metric_rows = [
+        {
+            "n_angles": int(n_angles),
+            "noise_level": f"I0={float(i0_level):.0e}",
+            "algorithm": "SIRT-like GD",
+            "mse": sirt_metrics["mse"],
+            "mae": sirt_metrics["mae"],
+            "psnr": sirt_metrics["psnr"],
+            "ssim": sirt_metrics["ssim"],
+        },
+        {
+            "n_angles": int(n_angles),
+            "noise_level": f"I0={float(i0_level):.0e}",
+            "algorithm": f"OS-SART ({int(n_subsets)} subsets)",
+            "mse": os_sart_metrics["mse"],
+            "mae": os_sart_metrics["mae"],
+            "psnr": os_sart_metrics["psnr"],
+            "ssim": os_sart_metrics["ssim"],
+        },
+    ]
+    metrics_path = write_csv_rows(metric_rows, metrics_out_path)
+
     return IterativeComparisonResult(
         n_angles=int(n_angles),
         noise_level=f"I0={float(i0_level):.0e}",
@@ -393,6 +453,8 @@ def run_os_sart_comparison(
         sirt_metrics=sirt_metrics,
         os_sart_metrics=os_sart_metrics,
         figure_path=figure_path,
+        metric_rows=metric_rows,
+        metrics_path=metrics_path,
     )
 
 

@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from skimage.transform import radon
 
+from ..common import resolve_project_path as _resolve_out_path
 from .exercise_1_1 import (
     ReconstructionCase,
     SinogramSet,
@@ -20,15 +21,6 @@ from .exercise_1_1 import (
     save_reconstruction_panels,
     summarize_metrics,
 )
-
-
-def _resolve_out_path(out_path: str | Path) -> Path:
-    """Resolve a project-relative output path to an absolute path."""
-    p = Path(out_path)
-    if p.is_absolute():
-        return p
-    project_root = Path(__file__).resolve().parents[3]
-    return project_root / p
 
 
 @dataclass
@@ -303,14 +295,19 @@ def run_limited_angle_reconstruction_experiment(
     poisson_i0_levels: Iterable[float] = (1e5, 1e3, 1e2),
     attenuation_scale: float = 1000.0,
     figures_out_dir: str | Path = "results/ct/figures/exercise_1_2",
-    metrics_out_path: str | Path = "results/ct/metrics/exercise_1_2_metrics.csv",
+    metrics_out_path: str | Path = "results/ct/metrics/exercise_1_2/exercise_1_2_metrics.csv",
     show: bool = False,
     show_progress: bool = False,
     hardest_case: tuple[int, str, str] | None = None,
     fbp_filter: str = "ramp",
-    gd_iters: int = 20,
-    gd_step_size: float = 0.8,
-    gd_positivity: bool = True,
+    gd_iters: int = 60,
+    gd_step_size: float = 0.02,
+    gd_init_mode: str = "fbp",
+    gd_normalize_gradient: bool = True,
+    gd_clip_to_reference_range: bool = True,
+    gd_mask_each_iter: bool = True,
+    gd_positivity: bool = False,
+    metric_mode: str = "reporting",
 ) -> LimitedAngleComparisonResult:
     """Run the full Exercise 1.2(b) limited-angle reconstruction workflow.
 
@@ -342,8 +339,18 @@ def run_limited_angle_reconstruction_experiment(
         Number of gradient-descent iterations.
     gd_step_size:
         Gradient-descent step size.
+    gd_init_mode:
+        Initialization strategy for gradient descent.
+    gd_normalize_gradient:
+        Whether to normalize each gradient-descent update by the gradient RMS.
+    gd_clip_to_reference_range:
+        Whether to clip the reconstruction to the reference image range after each update.
+    gd_mask_each_iter:
+        Whether to zero pixels outside the reconstruction circle after each update.
     gd_positivity:
         Whether to enforce positivity in gradient descent.
+    metric_mode:
+        Metric convention used to score reconstructions.
 
     Returns
     -------
@@ -359,7 +366,12 @@ def run_limited_angle_reconstruction_experiment(
         fbp_filter=fbp_filter,
         gd_iters=gd_iters,
         gd_step_size=gd_step_size,
+        gd_init_mode=gd_init_mode,
+        gd_normalize_gradient=gd_normalize_gradient,
+        gd_clip_to_reference_range=gd_clip_to_reference_range,
+        gd_mask_each_iter=gd_mask_each_iter,
         gd_positivity=gd_positivity,
+        metric_mode=metric_mode,
         show_progress=show_progress,
     )
     figure_paths = save_reconstruction_panels(
@@ -390,7 +402,7 @@ def run_limited_angle_sinogram_experiment(
     gaussian_sigma: float = 0.05,
     attenuation_scale: float = 1000.0,
     seed: int = 42,
-    panel_out_path: str | Path | None = "results/ct/figures/exercise_1_2_limited_angle_noisy_sinograms.png",
+    panel_out_path: str | Path | None = "results/ct/figures/exercise_1_2/exercise_1_2_limited_angle_noisy_sinograms.png",
     panel_dpi: int = 150,
     show_panel: bool = False,
 ) -> LimitedAngleSinogramExperimentResult:

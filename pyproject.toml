@@ -3,10 +3,11 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "a2-coursework"
+name = "a2mi"
 version = "0.1.0"
 description = "Medical imaging coursework package for CT and MRI exercises."
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
   "numpy",
@@ -16,8 +17,35 @@ dependencies = [
   "tqdm",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "ruff>=0.6",
+]
+
+[project.urls]
+Repository = "https://github.com/Sanssssssssssssssss/A2_Coursework"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=src/a2mi --cov-report=term-missing --cov-fail-under=90"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.coverage.run]
+source = ["src/a2mi"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+skip_covered = false
+show_missing = true
