@@ -1,0 +1,17 @@
+.git
+.github
+.idea
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.coverage
+build
+dist
+docs/_build
+notebooks/.ipynb_checkpoints
+results
+src/a2mi.egg-info

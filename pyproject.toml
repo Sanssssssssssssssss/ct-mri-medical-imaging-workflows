@@ -23,6 +23,13 @@ dev = [
   "pytest-cov>=5",
   "ruff>=0.6",
 ]
+docs = [
+  "sphinx>=8",
+  "pydata-sphinx-theme>=0.16",
+  "myst-parser>=4",
+  "sphinx-design>=0.6",
+  "sphinx-copybutton>=0.5",
+]
 
 [project.urls]
 Repository = "https://github.com/Sanssssssssssssssss/A2_Coursework"
