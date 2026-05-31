@@ -1,6 +1,6 @@
-# Medical Imaging Coursework A2
+# CT and MRI Medical Imaging Workflows
 
-This repository contains the submission for the *Data Science Applications to Medical Imaging* coursework. It includes the final report, the reproducible CT and MRI workflows for the practical modules, and the supporting documentation, tests, and Docker scripts needed to rerun the work. The internal `a2mi` package is only a lightweight implementation layer for the coursework workflows.
+This repository contains reproducible CT reconstruction and MRI denoising workflows for medical imaging experiments. It includes the final report, workflow scripts, supporting documentation, tests, and Docker scripts needed to rerun the work. The internal `a2mi` package is a lightweight implementation layer for the imaging workflows.
 
 The latest report can be found here:
 
@@ -53,14 +53,14 @@ python -m sphinx -b html -W --keep-going docs docs/_build/html
 ## Project Structure
 
 ```text
-src/            Coursework implementation package
+src/            Workflow implementation package
 notebooks/      Original exploratory notebooks
 scripts/        Main reviewer-facing shell entry points
 docker/         Dockerfiles and lower-level launchers
 docs/           Sphinx documentation source
 tests/          Automated validation
 results/        Generated figures and metrics
-report/         Final coursework report PDF
+report/         Final report PDF
 ```
 
 ## Licence

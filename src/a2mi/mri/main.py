@@ -1,4 +1,4 @@
-"""Command-line entry point for the full MRI coursework workflow."""
+"""Command-line entry point for the full MRI denoising workflow."""
 
 from __future__ import annotations
 
@@ -191,7 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Create the MRI workflow command-line parser."""
 
     parser = argparse.ArgumentParser(
-        description="Run the full MRI denoising coursework workflow and export results.",
+        description="Run the full MRI denoising workflow and export results.",
     )
     parser.add_argument(
         "--data-path",

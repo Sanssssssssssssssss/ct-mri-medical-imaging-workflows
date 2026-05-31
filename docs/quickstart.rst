@@ -65,7 +65,7 @@ Script summary:
 - ``scripts/run_ct.sh`` runs the full CT export workflow
 - ``scripts/run_mri.sh`` runs the full MRI export workflow
 
-Running the coursework workflows
+Running the imaging workflows
 --------------------------------
 
 The repository includes package entry points that reproduce the notebook export

@@ -1,4 +1,4 @@
-"""Top-level package for the medical imaging coursework codebase.
+"""Top-level package for the medical imaging workflow codebase.
 
 The package is intentionally small and notebook-friendly: the public API is
 grouped into the :mod:`a2mi.ct` and :mod:`a2mi.mri` subpackages so notebooks

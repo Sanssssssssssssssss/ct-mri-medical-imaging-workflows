@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "a2mi"
 version = "0.1.0"
-description = "Medical imaging coursework package for CT and MRI exercises."
+description = "Medical imaging workflows for CT reconstruction and MRI denoising."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
@@ -32,7 +32,7 @@ docs = [
 ]
 
 [project.urls]
-Repository = "https://github.com/Sanssssssssssssssss/A2_Coursework"
+Repository = "https://github.com/Sanssssssssssssssss/ct-mri-medical-imaging-workflows"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

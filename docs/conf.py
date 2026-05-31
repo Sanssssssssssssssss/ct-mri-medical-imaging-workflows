@@ -77,7 +77,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/Sanssssssssssssssss/A2_Coursework",
+            "url": "https://github.com/Sanssssssssssssssss/ct-mri-medical-imaging-workflows",
             "icon": "fa-brands fa-github",
         }
     ],

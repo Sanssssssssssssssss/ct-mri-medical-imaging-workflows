@@ -3,10 +3,10 @@ a2mi Documentation
 
 .. container:: hero-intro
 
-   **Medical imaging coursework package for CT reconstruction and MRI denoising**
+   **Medical imaging workflow package for CT reconstruction and MRI denoising**
 
    The ``a2mi`` repository combines a reusable Python package, notebook-driven
-   experiment workflows, automated validation, and coursework report assets in
+   experiment workflows, automated validation, and project report assets in
    one place. This documentation site is designed to make the codebase easy to
    explore from two directions: a quick narrative route for understanding the
    workflow, and an API route that renders package docstrings and source links
@@ -64,8 +64,8 @@ a2mi Documentation
       Browse auto-generated package documentation for ``a2mi``, ``a2mi.ct``,
       ``a2mi.mri``, and ``a2mi.common`` with source-code links.
 
-Coursework Overview
--------------------
+Workflow Overview
+-----------------
 
 The repository is structured around a lightweight ``src/`` package with
 notebooks acting as orchestration layers rather than the primary implementation

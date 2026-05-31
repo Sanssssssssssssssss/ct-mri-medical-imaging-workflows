@@ -13,7 +13,7 @@ the installed package rather than the current working directory.
    notebooks/       Experiment orchestration notebooks
    tests/           Automated validation
    results/         Generated figures and metrics
-   report/          Coursework report assets
+   report/          Report assets
    docs/            Sphinx documentation source
 
 Python and package configuration

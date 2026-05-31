@@ -1,4 +1,4 @@
-"""Command-line entry point for the full CT coursework workflow."""
+"""Command-line entry point for the full CT reconstruction workflow."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Create the CT workflow command-line parser."""
 
     parser = argparse.ArgumentParser(
-        description="Run the full CT reconstruction coursework workflow and export results.",
+        description="Run the full CT reconstruction workflow and export results.",
     )
     parser.add_argument(
         "--data-path",
